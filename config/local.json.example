@@ -1,0 +1,12 @@
+{
+  "yunxiao": {
+    "token": "pt-xxxx",
+    "org_id": "your-org-id",
+    "project_id": "",
+    "project_name": "示例项目名"
+  },
+  "query": {
+    "category": "Bug",
+    "per_page": 50
+  }
+}
