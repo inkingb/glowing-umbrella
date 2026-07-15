@@ -1,0 +1,22 @@
+{
+  "yunxiao": {
+    "domain": "https://openapi-rdc.aliyuncs.com",
+    "token": "",
+    "org_id": "",
+    "project_id": "",
+    "project_name": ""
+  },
+  "query": {
+    "category": "Bug",
+    "space_type": "Project",
+    "page": 1,
+    "per_page": 20,
+    "order_by": "gmtCreate",
+    "sort": "desc",
+    "keyword": "",
+    "fetch_all": false
+  },
+  "output": {
+    "format": "table"
+  }
+}

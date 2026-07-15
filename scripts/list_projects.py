@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""查询阿里云云效（Yunxiao）项目列表。
+"""查询阿里云云效项目列表。
 
-依赖环境变量：
-  YUNXIAO_TOKEN   个人访问令牌（请求头 x-yunxiao-token）
-  YUNXIAO_ORG_ID  组织 / 企业 ID
-
-可选：
-  YUNXIAO_DOMAIN  API 域名，默认 https://openapi-rdc.aliyuncs.com
-
-用法示例：
-  export YUNXIAO_TOKEN=pt-xxxx
-  export YUNXIAO_ORG_ID=your-org-id
-  python3 scripts/list_projects.py
-  python3 scripts/list_projects.py --keyword demo --json
-  python3 scripts/list_projects.py --all --per-page 50
+配置分层与 list_bugs.py 相同：
+  builtin → config/default.json → config/local.json → --config → 环境变量 → CLI
 """
 
 from __future__ import annotations
@@ -25,9 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# 允许直接执行本文件：python3 scripts/list_projects.py
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from config_loader import load_config  # noqa: E402
 from yunxiao_api import YunxiaoClient, YunxiaoError  # noqa: E402
 
 
@@ -35,7 +24,6 @@ def _fmt_ts(value: Any) -> str:
     if value in (None, ""):
         return "-"
     try:
-        # 云效常返回毫秒时间戳（字符串或数字）
         ts = int(value)
         if ts > 10_000_000_000:
             ts //= 1000
@@ -85,46 +73,84 @@ def _print_table(rows: list[dict[str, str]]) -> None:
         print(line(row))
 
 
-def fetch_projects(args: argparse.Namespace) -> list[dict[str, Any]]:
-    client = YunxiaoClient(
-        token=args.token,
-        organization_id=args.org_id,
-        domain=args.domain,
-    )
+def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    yunxiao: dict[str, Any] = {}
+    query: dict[str, Any] = {}
+    output: dict[str, Any] = {}
 
-    if not args.all:
+    if args.token is not None:
+        yunxiao["token"] = args.token
+    if args.org_id is not None:
+        yunxiao["org_id"] = args.org_id
+    if args.domain is not None:
+        yunxiao["domain"] = args.domain
+    if args.page is not None:
+        query["page"] = args.page
+    if args.per_page is not None:
+        query["per_page"] = args.per_page
+    if args.order_by is not None:
+        query["order_by"] = args.order_by
+    if args.sort is not None:
+        query["sort"] = args.sort
+    if args.keyword is not None:
+        query["keyword"] = args.keyword
+    if args.all:
+        query["fetch_all"] = True
+    if args.conditions is not None:
+        query["conditions"] = args.conditions
+    if args.extra_conditions is not None:
+        query["extra_conditions"] = args.extra_conditions
+    if args.json:
+        output["format"] = "json"
+
+    patch: dict[str, Any] = {}
+    if yunxiao:
+        patch["yunxiao"] = yunxiao
+    if query:
+        patch["query"] = query
+    if output:
+        patch["output"] = output
+    return patch
+
+
+def fetch_projects(config: dict[str, Any]) -> list[dict[str, Any]]:
+    client = YunxiaoClient.from_config(config)
+    query = config.get("query") or {}
+    keyword = (query.get("keyword") or "").strip() or None
+    per_page = int(query.get("per_page") or 20)
+
+    if not query.get("fetch_all"):
         projects, headers = client.search_projects(
-            page=args.page,
-            per_page=args.per_page,
-            order_by=args.order_by,
-            sort=args.sort,
-            keyword=args.keyword,
-            conditions=args.conditions,
-            extra_conditions=args.extra_conditions,
+            page=int(query.get("page") or 1),
+            per_page=per_page,
+            order_by=str(query.get("order_by") or "gmtCreate"),
+            sort=str(query.get("sort") or "desc"),
+            keyword=keyword,
+            conditions=query.get("conditions"),
+            extra_conditions=query.get("extra_conditions"),
         )
         total = headers.get("x-total")
-        if not args.json and total is not None:
+        fmt = str((config.get("output") or {}).get("format") or "table")
+        if fmt != "json" and total is not None:
             print(
-                f"# page={headers.get('x-page', args.page)} "
-                f"perPage={headers.get('x-per-page', args.per_page)} "
+                f"# page={headers.get('x-page', query.get('page'))} "
+                f"perPage={headers.get('x-per-page', per_page)} "
                 f"total={total}",
                 file=sys.stderr,
             )
         return projects
 
-    # 拉取全部页
     page = 1
-    per_page = args.per_page
     all_projects: list[dict[str, Any]] = []
     while True:
         projects, headers = client.search_projects(
             page=page,
             per_page=per_page,
-            order_by=args.order_by,
-            sort=args.sort,
-            keyword=args.keyword,
-            conditions=args.conditions,
-            extra_conditions=args.extra_conditions,
+            order_by=str(query.get("order_by") or "gmtCreate"),
+            sort=str(query.get("sort") or "desc"),
+            keyword=keyword,
+            conditions=query.get("conditions"),
+            extra_conditions=query.get("extra_conditions"),
         )
         all_projects.extend(projects)
         total_pages = headers.get("x-total-pages")
@@ -149,7 +175,8 @@ def fetch_projects(args: argparse.Namespace) -> list[dict[str, Any]]:
         if page > 1000:
             raise YunxiaoError("分页超过 1000 页，已中止，请缩小查询范围。")
 
-    if not args.json:
+    fmt = str((config.get("output") or {}).get("format") or "table")
+    if fmt != "json":
         print(f"# fetched={len(all_projects)}", file=sys.stderr)
     return all_projects
 
@@ -158,65 +185,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="查询阿里云云效项目列表（SearchProjects）",
     )
-    parser.add_argument(
-        "--token",
-        help="个人访问令牌，默认读 YUNXIAO_TOKEN",
-    )
-    parser.add_argument(
-        "--org-id",
-        help="组织 ID，默认读 YUNXIAO_ORG_ID",
-    )
-    parser.add_argument(
-        "--domain",
-        help="API 域名，默认读 YUNXIAO_DOMAIN 或中心版域名",
-    )
-    parser.add_argument(
-        "--keyword",
-        "-k",
-        help="按项目名称关键字过滤",
-    )
-    parser.add_argument(
-        "--page",
-        type=int,
-        default=1,
-        help="页码，默认 1",
-    )
-    parser.add_argument(
-        "--per-page",
-        type=int,
-        default=20,
-        help="每页条数，1-200，默认 20",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="自动翻页拉取全部项目",
-    )
-    parser.add_argument(
-        "--order-by",
-        choices=("gmtCreate", "name"),
-        default="gmtCreate",
-        help="排序字段，默认 gmtCreate",
-    )
-    parser.add_argument(
-        "--sort",
-        choices=("desc", "asc"),
-        default="desc",
-        help="排序方向，默认 desc",
-    )
-    parser.add_argument(
-        "--conditions",
-        help="自定义 conditions JSON 字符串（覆盖 --keyword）",
-    )
-    parser.add_argument(
-        "--extra-conditions",
-        help="额外过滤条件 JSON 字符串（如我参与的/我管理的）",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="输出原始 JSON",
-    )
+    parser.add_argument("--config-dir", help="配置目录，默认仓库下 config/")
+    parser.add_argument("--config", help="额外配置文件")
+    parser.add_argument("--token", help="个人访问令牌")
+    parser.add_argument("--org-id", help="组织 ID")
+    parser.add_argument("--domain", help="API 域名")
+    parser.add_argument("--keyword", "-k", help="按项目名称关键字过滤")
+    parser.add_argument("--page", type=int, help="页码")
+    parser.add_argument("--per-page", type=int, help="每页条数，1-200")
+    parser.add_argument("--all", action="store_true", help="自动翻页拉取全部项目")
+    parser.add_argument("--order-by", choices=("gmtCreate", "name"))
+    parser.add_argument("--sort", choices=("desc", "asc"))
+    parser.add_argument("--conditions", help="自定义 conditions JSON 字符串")
+    parser.add_argument("--extra-conditions", help="额外过滤条件 JSON 字符串")
+    parser.add_argument("--json", action="store_true", help="输出原始 JSON")
     return parser
 
 
@@ -224,16 +206,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not 1 <= args.per_page <= 200:
-        parser.error("--per-page 需在 1-200 之间")
-
     try:
-        projects = fetch_projects(args)
-    except YunxiaoError as exc:
+        config = load_config(
+            config_dir=args.config_dir,
+            extra_config=args.config,
+            cli_overrides=_cli_overrides(args),
+        )
+        per_page = int((config.get("query") or {}).get("per_page") or 20)
+        if not 1 <= per_page <= 200:
+            parser.error("--per-page 需在 1-200 之间")
+        projects = fetch_projects(config)
+    except (YunxiaoError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
 
-    if args.json:
+    fmt = str((config.get("output") or {}).get("format") or "table")
+    if fmt == "json":
         print(json.dumps(projects, ensure_ascii=False, indent=2))
     else:
         _print_table([_project_row(p) for p in projects])
